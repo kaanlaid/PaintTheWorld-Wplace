@@ -1,10 +1,10 @@
 ;(()=>{'use strict';
 
-/** WPlace Buddy — click-only + overlay sürümü */
+/** WPlace Buddy — click-only + overlay + resize (v2) */
 const CFG={
   canvasSelectors:['canvas#board','canvas.PixelCanvas','canvas[id*="canvas"]','canvas'],
   tickMs:350, cooldown:900, delay:{min:250,max:650},
-  autoScale:true, storageKey:'wplace-buddy:settings:v2'
+  autoScale:true, storageKey:'wplace-buddy:settings:v3'
 };
 
 const S={
@@ -12,14 +12,15 @@ const S={
   ctxBoard:null, // {type:'2d'|'webgl', ctx}
   board:{w:0,h:0},
   running:false, last:0, q:[],
-  template:{img:null,data:null,w:0,h:0,scale:1},
+  template:{img:null,data:null,w:0,h:0,scale:1,nw:0,nh:0}, // nw/nh: UI hedef boyut
   overlay:{el:null},
   set:{
     selectors:[...CFG.canvasSelectors],
     tickMs:CFG.tickMs, cooldown:CFG.cooldown,
     dmin:CFG.delay.min, dmax:CFG.delay.max,
-    mode:'auto', // 'auto'|'click-only'
-    ov:{on:false,alpha:0.4, offX:0, offY:0}
+    mode:'click-only', // 'auto'|'click-only'  (varsayılan: click-only)
+    ov:{on:false,alpha:0.4, offX:0, offY:0},
+    aspectLock:true
   }
 };
 
@@ -100,16 +101,36 @@ function imgFromFile(f){return new Promise((res,rej)=>{const fr=new FileReader()
 function imgFromUrl(u){return new Promise((res,rej)=>{const im=new Image();im.crossOrigin='anonymous';im.onload=()=>res(im);im.onerror=rej;im.src=u;});}
 function draw(img,w,h){const cv=document.createElement('canvas');cv.width=w;cv.height=h;const cx=cv.getContext('2d');cx.drawImage(img,0,0,w,h);return cx.getImageData(0,0,w,h);}
 
+/* template + resize */
 async function setTemplate(img){
-  const tW=S.board.w||img.width, tH=S.board.h||img.height;
-  let w=img.width,h=img.height,scale=1;
-  if(CFG.autoScale && (img.width!==tW || img.height!==tH)){ const rw=tW/img.width, rh=tH/img.height; scale=Math.min(rw,rh); w=Math.max(1,Math.round(img.width*scale)); h=Math.max(1,Math.round(img.height*scale)); }
-  const data=draw(img,w,h);
-  Object.assign(S.template,{img,data,w,h,scale});
+  const tW = S.board.w || img.width;
+  const tH = S.board.h || img.height;
+
+  // UI hedefleri
+  let reqW = parseInt(S.ui.imgW?.value||'')||0;
+  let reqH = parseInt(S.ui.imgH?.value||'')||0;
+
+  // Auto fit, eğer kullanıcı değer girmediyse
+  if ((!reqW || !reqH) && CFG.autoScale){
+    const rw=tW/img.width, rh=tH/img.height;
+    const sc=Math.min(rw,rh);
+    reqW=Math.max(1,Math.round(img.width*sc));
+    reqH=Math.max(1,Math.round(img.height*sc));
+  }
+  if(!reqW) reqW=img.width;
+  if(!reqH) reqH=img.height;
+
+  // UI’ı güncelle
+  if(S.ui.imgW) S.ui.imgW.value=reqW;
+  if(S.ui.imgH) S.ui.imgH.value=reqH;
+
+  const data=draw(img, reqW, reqH);
+  Object.assign(S.template,{img,data,w:reqW,h:reqH,scale:reqW/img.width,nw:reqW,nh:reqH});
   renderOverlay();
 }
 
-function shuffle(a){for(let i=a.length-1;i>0;i--){const j=(Math.random()* (i+1))|0;[a[i],a[j]]=[a[j],a[i]];}return a;}
+/* queue builders */
+function shuffle(a){for(let i=a.length-1;i>0;i--){const j=(Math.random()*(i+1))|0;[a[i],a[j]]=[a[j],a[i]];}return a;}
 
 function buildClickOnlyQueue(){
   const t=S.template.data; if(!t) throw new Error('Şablon yok');
@@ -160,171 +181,4 @@ function clickPixel(x,y){
 async function placeNext(){
   if(!S.running) return;
   const now=Date.now(); if(now-S.last<S.set.cooldown) return;
-  const it=S.q.shift(); updQ(); if(!it){ status('Bitti! Kuyruk boş.'); setRun(false); return; }
-  if(S.set.dmin>S.set.dmax) S.set.dmax=S.set.dmin+50;
-  await sleep(ri(S.set.dmin,S.set.dmax));
-  clickPixel(it.x,it.y);
-  S.last=Date.now();
-}
-let tick=null; function start(){ stop(); tick=setInterval(placeNext,S.set.tickMs); }
-function stop(){ if(tick) clearInterval(tick); tick=null; }
-
-/* overlay */
-function ensureOverlay(){
-  if(S.overlay.el) return S.overlay.el;
-  const el=document.createElement('div');
-  el.style.position='absolute'; el.style.pointerEvents='none';
-  el.style.top='0'; el.style.left='0'; el.style.zIndex='2147483646';
-  document.body.appendChild(el); S.overlay.el=el; return el;
-}
-function renderOverlay(){
-  if(!S.template.img || !S.canvas) return;
-  const el=ensureOverlay();
-  if(!S.set.ov.on){ el.style.display='none'; return; }
-  const rect=S.canvas.getBoundingClientRect();
-  const img=S.template.img;
-  el.style.display='block';
-  el.style.width=rect.width+'px'; el.style.height=rect.height+'px';
-  el.style.transform=`translate(${rect.left}px, ${rect.top}px)`;
-  const scaleX=rect.width/(S.board.w||img.width);
-  const scaleY=rect.height/(S.board.h||img.height);
-  const s=Math.min(scaleX,scaleY);
-  const w=(img.width*s)|0, h=(img.height*s)|0;
-  el.style.backgroundImage=`url(${img.src})`;
-  el.style.backgroundSize=`${w}px ${h}px`;
-  el.style.backgroundRepeat='no-repeat';
-  el.style.opacity=String(S.set.ov.alpha);
-  el.style.backgroundPosition=`${(S.set.ov.offX*s)|0}px ${(S.set.ov.offY*s)|0}px`;
-}
-window.addEventListener('resize',renderOverlay);
-
-/* UI */
-function buildUI(){
-  if(S.root) return;
-  const host=document.createElement('div');
-  host.style.position='fixed'; host.style.inset='auto 12px 12px auto';
-  host.style.zIndex='2147483647'; document.body.appendChild(host);
-  const sh=host.attachShadow({mode:'open'}); S.root=sh;
-  const wrap=document.createElement('div');
-  wrap.innerHTML=`
-<style>
-.panel{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial;background:rgba(20,20,24,.95);color:#fff;border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:12px;width:340px;box-shadow:0 8px 30px rgba(0,0,0,.45)}
-.row{display:flex;gap:8px;align-items:center;margin:8px 0}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.btn{cursor:pointer;user-select:none;text-align:center;padding:8px 10px;background:#6c8cff;border:none;border-radius:8px;color:#fff;font-weight:700}
-.btn.sec{background:#2c2f36}.btn.red{background:#ff5d6c}
-.small{font-size:12px;opacity:.9}
-input[type="number"],input[type="text"]{background:#15171b;color:#fff;border:1px solid #2a2e37;border-radius:6px;padding:6px 8px}
-input[type="file"]{color:#ddd}.badge{background:#2c2f36;padding:2px 6px;border-radius:999px;font-size:11px}
-.sep{height:1px;background:#2a2e37;margin:10px 0}
-.link{color:#8fb3ff;text-decoration:underline;cursor:pointer}
-.q{font-weight:800}
-</style>
-<div class="panel">
-  <div class="row" style="justify-content:space-between">
-    <div style="font-weight:800">WPlace Buddy <span class="badge">beta</span></div>
-    <button class="btn sec" id="xbtn">×</button>
-  </div>
-  <div class="small">Durum: <span id="status">Hazır</span></div>
-  <div class="sep"></div>
-
-  <div class="row">
-    <input type="file" id="file" accept="image/png,image/jpeg,image/webp">
-    <button class="btn sec" id="url">URL</button>
-  </div>
-
-  <div class="row">
-    <button class="btn" id="diff">Farkı Hesapla</button>
-    <div class="q" id="q">0</div>
-  </div>
-
-  <div class="grid">
-    <div><label class="small">Tick (ms)</label><input type="number" id="tick" min="100" step="50"></div>
-    <div><label class="small">Cooldown (ms)</label><input type="number" id="cd" min="200" step="50"></div>
-    <div><label class="small">Gecikme Min</label><input type="number" id="dmin" min="0" step="10"></div>
-    <div><label class="small">Gecikme Max</label><input type="number" id="dmax" min="0" step="10"></div>
-  </div>
-
-  <div class="grid" style="margin-top:6px">
-    <div><label class="small">Ofset X</label><input type="number" id="ox" value="0"></div>
-    <div><label class="small">Ofset Y</label><input type="number" id="oy" value="0"></div>
-    <div><label class="small">Overlay %</label><input type="number" id="ov" min="0" max="100" value="40"></div>
-    <div><label class="small">Mod</label><input type="text" id="mode" value="auto" title="auto | click-only"></div>
-  </div>
-
-  <div class="row"><button class="btn sec" id="ovtoggle">Overlay Aç/Kapat</button></div>
-
-  <div class="row">
-    <input type="text" id="sels" placeholder="Kanvas seçicileri (virgülle)">
-  </div>
-
-  <div class="row">
-    <button class="btn" id="start">Başlat</button>
-    <button class="btn red" id="stop">Durdur</button>
-  </div>
-
-  <div class="small">
-    <span class="link" id="refresh">Kanvastan Yenile</span> ·
-    <span class="link" id="save">Ayarları Kaydet</span>
-  </div>
-</div>`;
-  sh.appendChild(wrap);
-
-  const $=id=>sh.getElementById(id);
-  S.ui={ status:$('status'), q:$('q'),
-    file:$('file'), url:$('url'), diff:$('diff'),
-    tick:$('tick'), cd:$('cd'), dmin:$('dmin'), dmax:$('dmax'),
-    ox:$('ox'), oy:$('oy'), ov:$('ov'), mode:$('mode'), ovtoggle:$('ovtoggle'),
-    sels:$('sels'), start:$('start'), stop:$('stop'), refresh:$('refresh'), save:$('save'), xbtn:$('xbtn')
-  };
-
-  // doldur
-  S.ui.tick.value=S.set.tickMs; S.ui.cd.value=S.set.cooldown;
-  S.ui.dmin.value=S.set.dmin; S.ui.dmax.value=S.set.dmax;
-  S.ui.ox.value=S.set.ov.offX; S.ui.oy.value=S.set.ov.offY;
-  S.ui.ov.value=Math.round(S.set.ov.alpha*100); S.ui.mode.value=S.set.mode;
-  S.ui.sels.value=S.set.selectors.join(', ');
-
-  // events
-  S.ui.file.addEventListener('change',async e=>{
-    const f=e.target.files?.[0]; if(!f) return;
-    status('Şablon yükleniyor…'); const im=await imgFromFile(f); await setTemplate(im); status('Şablon yüklendi.'); });
-  S.ui.url.addEventListener('click',async ()=>{
-    const u=prompt('Şablon URL:'); if(!u) return;
-    try{ status('Şablon indiriliyor…'); const im=await imgFromUrl(u); await setTemplate(im); status('Şablon yüklendi.'); }catch(err){ status('Hata: '+err.message); }
-  });
-  S.ui.diff.addEventListener('click',()=>{ try{ getCanvasContext(); computeDiffQueue(); status('Kuyruk hazır.'); }catch(err){ status(err.message); } });
-  S.ui.ovtoggle.addEventListener('click',()=>{ S.set.ov.on=!S.set.ov.on; renderOverlay(); });
-  ['tick','cd','dmin','dmax','ox','oy','ov','mode','sels'].forEach(k=>{
-    S.ui[k].addEventListener('input',()=>{
-      S.set.tickMs=parseInt(S.ui.tick.value||CFG.tickMs,10);
-      S.set.cooldown=parseInt(S.ui.cd.value||CFG.cooldown,10);
-      S.set.dmin=parseInt(S.ui.dmin.value||CFG.delay.min,10);
-      S.set.dmax=parseInt(S.ui.dmax.value||CFG.delay.max,10);
-      S.set.ov.offX=parseInt(S.ui.ox.value||0,10);
-      S.set.ov.offY=parseInt(S.ui.oy.value||0,10);
-      S.set.ov.alpha=Math.max(0,Math.min(1,(parseInt(S.ui.ov.value||40,10)/100)));
-      S.set.mode=(S.ui.mode.value||'auto').trim();
-      S.set.selectors=(S.ui.sels.value||'').split(',').map(s=>s.trim()).filter(Boolean);
-      renderOverlay();
-    });
-  });
-  S.ui.refresh.addEventListener('click',()=>{ try{ getCanvasContext(); status('Kanvas bulundu.'); renderOverlay(); }catch(err){ status(err.message);} });
-  S.ui.save.addEventListener('click',()=>{ save(); status('Ayarlar kaydedildi.'); });
-  S.ui.start.addEventListener('click',()=>{ try{ getCanvasContext(); computeDiffQueue(); setRun(true);}catch(err){ status(err.message);} });
-  S.ui.stop.addEventListener('click',()=>setRun(false));
-  S.ui.xbtn.addEventListener('click',()=>{ stop(); host.remove(); S.root=null; });
-}
-
-function status(s){ if(S.ui.status) S.ui.status.textContent=s; }
-function updQ(){ if(S.ui.q) S.ui.q.textContent=String(S.q.length); }
-function setRun(f){ S.running=f; if(f){ status('Çalışıyor…'); start(); } else { status('Durduruldu.'); stop(); } }
-
-/* init */
-function main(){
-  load(); buildUI();
-  try{ getCanvasContext(); status('Hazır – kanvas bulundu.'); }catch{ status('2D context alınamadı. (auto → click-only kullan)'); }
-}
-main();
-
-})();
+  const it=S.q.shift(); updQ(); if(!it){ status('Bitti! Kuyruk boş.'); set
